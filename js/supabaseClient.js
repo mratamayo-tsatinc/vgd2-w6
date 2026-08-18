@@ -10,7 +10,7 @@
 
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
 
-const SUPABASE_URL = 'https://YOUR-PROJECT-REF.supabase.co' // TODO: replace
-const SUPABASE_ANON_KEY = 'YOUR-ANON-PUBLIC-KEY'             // TODO: replace
+const SUPABASE_URL = 'https://guufuvumwzytvqxtuhzb.supabase.co' // TODO: replace
+const SUPABASE_ANON_KEY = 'sb_publishable_LLWKj3g3XR1RMAt5BlyWtw_vG_IDsbz'             // TODO: replace
 
 export const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY)
