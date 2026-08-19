@@ -40,6 +40,12 @@ const App = (() => {
   let currentChecklistItems = {}; // NEW — mockup-mirroring UI: items[] per sectionId, for whichever
                                    // section cards are currently rendered in #studentSectionResults,
                                    // so a row's eye-button click can look its record back up.
+  // NEW — Inspect Image (teacher-only forensic metadata viewer): staged
+  // MetadataInspector records + which one is currently shown in the detail
+  // panel. Entirely client-side/read-only — never sent to the server.
+  let inspectRecords       = [];
+  let inspectSelectedIndex = -1;
+
   let confirmCb        = null;
   let confirmModal     = null;
   let isTeacher         = false;
@@ -56,6 +62,7 @@ const App = (() => {
     answerkey: 'Answer Key',
     upload:    'Upload Submission',
     results:   'Results',
+    inspect:   'Inspect Image',
     settings:  'Settings'
   };
 
@@ -93,6 +100,19 @@ const App = (() => {
         e.preventDefault();
         akDropZone.classList.remove('dragover');
         if (e.dataTransfer.files && e.dataTransfer.files.length) handleAkFileSelect(e.dataTransfer.files);
+      });
+    }
+
+    // Drag-and-drop for the Inspect Image page's dropzone (teacher-only,
+    // fully client-side metadata viewer — see js/metadataInspector.js).
+    const inspectDropZone = document.getElementById('inspectDropZone');
+    if (inspectDropZone) {
+      inspectDropZone.addEventListener('dragover', e => { e.preventDefault(); inspectDropZone.classList.add('dragover'); });
+      inspectDropZone.addEventListener('dragleave', () => inspectDropZone.classList.remove('dragover'));
+      inspectDropZone.addEventListener('drop', e => {
+        e.preventDefault();
+        inspectDropZone.classList.remove('dragover');
+        if (e.dataTransfer.files && e.dataTransfer.files.length) handleInspectFileSelect(e.dataTransfer.files);
       });
     }
 
@@ -2339,6 +2359,198 @@ const App = (() => {
   }
 
   // ════════════════════════════════════════════════════════
+  //  INSPECT IMAGE  (teacher only) — NEW
+  //  Forensic metadata viewer. Files never leave the browser and nothing
+  //  here is graded or saved — it's purely for a teacher to look at what
+  //  a file actually contains. Every field shown comes from
+  //  MetadataInspector, which extracts whatever tags a file happens to
+  //  carry — nothing displayed here is a hardcoded list of "expected"
+  //  properties (see js/metadataInspector.js header for the guiding
+  //  principle behind that).
+  // ════════════════════════════════════════════════════════
+
+  function inspectFileListItemHtml(rec, idx) {
+    const active = idx === inspectSelectedIndex;
+    const badge = rec.parseError
+      ? '<span class="badge bg-danger-subtle text-danger border border-danger-subtle">error</span>'
+      : rec.tagCount > 0
+        ? '<span class="badge bg-success-subtle text-success border border-success-subtle">' + rec.tagCount + ' tag' + (rec.tagCount !== 1 ? 's' : '') + '</span>'
+        : '<span class="badge bg-secondary-subtle text-secondary border">no metadata</span>';
+    const dims = (rec.width && rec.height) ? (rec.width + '×' + rec.height + ' · ') : '';
+    return '<a href="#" class="list-group-item list-group-item-action' + (active ? ' active' : '') + '" ' +
+      'onclick="event.preventDefault();App.selectInspectFile(' + idx + ')">' +
+      '<div class="d-flex align-items-center justify-content-between gap-2">' +
+      '<div class="text-truncate">' +
+      '<div class="fw-semibold small text-truncate">' + esc(rec.fileName) + '</div>' +
+      '<div class="' + (active ? 'text-white-50' : 'text-muted') + ' small">' + dims + esc(rec.detectedFormat || '?') + ' · ' + esc(rec.sizeKb) + ' KB</div>' +
+      '</div>' + badge +
+      '</div></a>';
+  }
+
+  function renderInspectFileList() {
+    const wrap = document.getElementById('inspectFileList');
+    const count = document.getElementById('inspectFileCount');
+    if (count) count.textContent = inspectRecords.length + ' file' + (inspectRecords.length !== 1 ? 's' : '');
+    if (!wrap) return;
+    if (!inspectRecords.length) {
+      wrap.innerHTML = '<div class="text-muted small fst-italic p-2">No files staged yet.</div>';
+      return;
+    }
+    wrap.innerHTML = inspectRecords.map(inspectFileListItemHtml).join('');
+  }
+
+  async function handleInspectFileSelect(fileList) {
+    const files = Array.from(fileList || []);
+    if (!files.length) return;
+
+    const count = document.getElementById('inspectFileCount');
+    if (count) count.textContent = 'processing ' + files.length + '…';
+
+    const newRecords = await MetadataInspector.inspectFiles(files, (done, total) => {
+      if (count) count.textContent = done + ' / ' + total + ' processed…';
+    });
+
+    const startIdx = inspectRecords.length;
+    inspectRecords = inspectRecords.concat(newRecords);
+    renderInspectFileList();
+    document.getElementById('inspectFileInput').value = '';
+    selectInspectFile(startIdx); // jump straight to the first newly-added file
+  }
+
+  function clearInspectFiles() {
+    inspectRecords = [];
+    inspectSelectedIndex = -1;
+    renderInspectFileList();
+    renderInspectDetail();
+  }
+
+  function selectInspectFile(idx) {
+    if (!inspectRecords[idx]) return;
+    inspectSelectedIndex = idx;
+    renderInspectFileList();
+    const filterEl = document.getElementById('inspectFilter');
+    if (filterEl) filterEl.value = '';
+    renderInspectDetail();
+  }
+
+  /** One <table> of key/value rows for a single metadata group — the
+   *  generic renderer every group (EXIF, IPTC, XMP, ICC, ...) shares.
+   *  Keys/values are never assumed in advance; whatever exifr returned
+   *  for this group is what's iterated and shown. */
+  function inspectGroupTableHtml(groupKey, groupObj, filterQ) {
+    const q = (filterQ || '').toLowerCase();
+    const keys = Object.keys(groupObj).filter(k => {
+      if (!q) return true;
+      const label = MetadataInspector.humanizeKey(k).toLowerCase();
+      const val = MetadataInspector.formatValue(groupObj[k]).text.toLowerCase();
+      return label.includes(q) || k.toLowerCase().includes(q) || val.includes(q);
+    });
+    if (!keys.length) return '';
+
+    const info = MetadataInspector.GROUP_INFO[groupKey] || { label: humanizeGroupKey_(groupKey), icon: 'bi-tag', hint: '' };
+    const rows = keys.map(k => {
+      const fv = MetadataInspector.formatValue(groupObj[k]);
+      const valCls = (fv.kind === 'binary' || fv.kind === 'empty') ? ' text-muted fst-italic' : '';
+      return '<tr><td class="small text-muted" style="width:45%">' + esc(MetadataInspector.humanizeKey(k)) + '</td>' +
+        '<td class="small' + valCls + '" style="word-break:break-word">' + esc(fv.text) + '</td></tr>';
+    }).join('');
+
+    return '<div class="card mb-3">' +
+      '<div class="card-header d-flex align-items-center justify-content-between">' +
+      '<span><i class="bi ' + info.icon + ' me-2 text-primary"></i>' + esc(info.label) + '</span>' +
+      '<span class="badge bg-light text-dark border">' + keys.length + '</span>' +
+      '</div>' +
+      (info.hint ? '<div class="px-3 pt-2 text-muted small">' + esc(info.hint) + '</div>' : '') +
+      '<div class="table-responsive"><table class="table table-sm table-hover mb-0"><tbody>' + rows + '</tbody></table></div>' +
+      '</div>';
+  }
+
+  function humanizeGroupKey_(k) { return esc(MetadataInspector.humanizeKey(k)); }
+
+  function renderInspectDetail(filterQ) {
+    const label = document.getElementById('inspectDetailLabel');
+    const body  = document.getElementById('inspectDetailBody');
+    const btn   = document.getElementById('btnInspectExport');
+    const rec = inspectRecords[inspectSelectedIndex];
+
+    if (!rec) {
+      if (label) label.textContent = '— no file selected';
+      if (btn) btn.disabled = true;
+      if (body) body.innerHTML = '<div class="text-center text-muted py-5">' +
+        '<i class="bi bi-file-earmark-image fs-1 d-block mb-2"></i>Select a file on the left to see its metadata.</div>';
+      return;
+    }
+
+    if (label) label.textContent = '— ' + rec.fileName;
+    if (btn) btn.disabled = false;
+
+    // File Info — the only "always present" section, built from facts the
+    // app itself derives (file size, detected true format/dimensions via
+    // the same ImageProcessor pipeline used for grading, and the shared
+    // perceptual hash) — clearly separated from actually-embedded metadata
+    // below, since these are computed, not read out of the file's tags.
+    const fileInfoRows = [
+      ['File name', rec.fileName],
+      ['File size', rec.sizeKb + ' KB'],
+      ['Last modified (browser)', rec.lastModified ? rec.lastModified.toLocaleString() : '—'],
+      ['Detected format (by file content)', rec.detectedFormat || 'Unrecognized'],
+      ['Dimensions', (rec.width && rec.height) ? (rec.width + ' × ' + rec.height + ' px') : '—'],
+      ['Perceptual hash (aHash)', rec.perceptualHash || '—']
+    ].map(([k, v]) => '<tr><td class="small text-muted" style="width:45%">' + esc(k) + '</td>' +
+      '<td class="small">' + esc(v) + '</td></tr>').join('');
+
+    let html = '<div class="card mb-3">' +
+      '<div class="card-header"><i class="bi bi-info-circle-fill me-2 text-primary"></i>File Info ' +
+      '<span class="text-muted small fw-normal">(computed, not embedded)</span></div>' +
+      '<div class="table-responsive"><table class="table table-sm table-hover mb-0"><tbody>' + fileInfoRows + '</tbody></table></div>' +
+      '</div>';
+
+    if (rec.gps) {
+      const mapUrl = 'https://www.openstreetmap.org/?mlat=' + rec.gps.lat + '&mlon=' + rec.gps.lon + '#map=15/' + rec.gps.lat + '/' + rec.gps.lon;
+      html += '<div class="alert alert-info d-flex align-items-center justify-content-between gap-2 mb-3">' +
+        '<span><i class="bi bi-geo-alt-fill me-2"></i>GPS location embedded: ' +
+        '<strong>' + rec.gps.lat.toFixed(6) + ', ' + rec.gps.lon.toFixed(6) + '</strong></span>' +
+        '<a class="btn btn-sm btn-outline-primary" href="' + esc(mapUrl) + '" target="_blank" rel="noopener">' +
+        '<i class="bi bi-box-arrow-up-right me-1"></i>View on map</a></div>';
+    }
+
+    if (rec.parseError) {
+      html += '<div class="alert alert-warning small mb-3"><i class="bi bi-exclamation-triangle-fill me-2"></i>' + esc(rec.parseError) + '</div>';
+    }
+
+    const groupKeys = Object.keys(rec.groups);
+    if (!groupKeys.length && !rec.parseError) {
+      html += '<div class="alert alert-light border small mb-0"><i class="bi bi-inboxes me-2"></i>' +
+        'No embedded EXIF/IPTC/XMP/ICC metadata was found in this file — common for plain re-saved ' +
+        'PNGs, screenshots, or images that had metadata stripped during export.</div>';
+    } else {
+      const groupsHtml = groupKeys.map(g => inspectGroupTableHtml(g, rec.groups[g], filterQ)).filter(Boolean).join('');
+      html += groupsHtml || '<div class="text-muted small fst-italic">No fields match your filter.</div>';
+    }
+
+    if (body) body.innerHTML = html;
+  }
+
+  function filterInspectDetail(q) {
+    renderInspectDetail(q);
+  }
+
+  function exportInspectJson() {
+    const rec = inspectRecords[inspectSelectedIndex];
+    if (!rec) return;
+    const plain = MetadataInspector.toPlainObject(rec);
+    const content = JSON.stringify(plain, null, 2);
+    const uri = 'data:application/json;charset=utf-8,' + encodeURIComponent(content);
+    const a = document.createElement('a');
+    a.href = uri;
+    a.download = 'metadata-' + (rec.fileName || 'file').replace(/[^\w\-.]+/g, '_') + '.json';
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    toast('Metadata downloaded.', 'success');
+  }
+
+  // ════════════════════════════════════════════════════════
   //  SETTINGS  (teacher only)
   // ════════════════════════════════════════════════════════
   async function loadSettings() {
@@ -2868,6 +3080,12 @@ const App = (() => {
     exportResults,
     confirmClearSubmissions,
     toggleDetail,
+    // Inspect Image
+    handleInspectFileSelect,
+    selectInspectFile,
+    clearInspectFiles,
+    filterInspectDetail,
+    exportInspectJson,
     // Settings
     loadSettings,
     saveSettings,

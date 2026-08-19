@@ -100,6 +100,9 @@
       <a href="#" class="sidebar-link teacher-only" data-page="results">
         <i class="bi bi-table"></i><span>Results</span>
       </a>
+      <a href="#" class="sidebar-link teacher-only" data-page="inspect">
+        <i class="bi bi-search"></i><span>Inspect Image</span>
+      </a>
       <a href="#" class="sidebar-link teacher-only mt-auto" data-page="settings">
         <i class="bi bi-gear-fill"></i><span>Settings</span>
       </a>
@@ -814,6 +817,74 @@
       </div>
 
       <!-- ══════════════════════════════════════════════════
+           PAGE: INSPECT IMAGE  (teacher only)
+           Standalone forensic viewer — parses and displays whatever
+           embedded metadata a file actually contains (EXIF/IPTC/XMP/ICC/
+           GPS/etc.), generically, with nothing hardcoded about which
+           tags to expect. Entirely client-side / read-only: nothing here
+           is saved, scored, or sent to the server. See js/metadataInspector.js.
+      ══════════════════════════════════════════════════════════ -->
+      <div id="page-inspect" class="page teacher-only">
+        <div class="row g-4">
+          <div class="col-lg-4">
+            <div class="card">
+              <div class="card-header d-flex align-items-center justify-content-between">
+                <span><i class="bi bi-search me-2 text-primary"></i>Inspect Image</span>
+                <span class="badge bg-secondary" id="inspectFileCount">0 files</span>
+              </div>
+              <div class="card-body">
+                <p class="text-muted small mb-3">
+                  <i class="bi bi-info-circle me-1"></i>Drop in any image file(s) — a student's
+                  submission, a suspicious re-upload, anything — to see exactly what metadata is
+                  embedded inside it. This is read-only: nothing you inspect here is graded, saved,
+                  or sent anywhere.
+                </p>
+                <div class="drop-zone py-4" id="inspectDropZone" onclick="document.getElementById('inspectFileInput').click()">
+                  <i class="bi bi-file-earmark-binary drop-zone-icon" style="font-size:2rem;margin-bottom:8px"></i>
+                  <p class="fw-semibold mb-1">Drag &amp; drop image file(s) here</p>
+                  <p class="text-muted small mb-0">or click to browse — single or bulk selection both work</p>
+                </div>
+                <input type="file" id="inspectFileInput" accept="image/*,.tif,.tiff,.pdf" class="d-none" multiple
+                  onchange="App.handleInspectFileSelect(this.files)">
+
+                <div class="d-flex gap-2 mt-3">
+                  <button class="btn btn-sm btn-outline-danger flex-grow-1" onclick="App.clearInspectFiles()">
+                    <i class="bi bi-trash me-1"></i>Clear All
+                  </button>
+                </div>
+
+                <div class="list-group mt-3" id="inspectFileList" style="max-height:480px;overflow-y:auto"></div>
+              </div>
+            </div>
+          </div>
+
+          <div class="col-lg-8">
+            <div class="card">
+              <div class="card-header d-flex align-items-center justify-content-between gap-3">
+                <span><i class="bi bi-card-list me-2 text-primary"></i>Metadata
+                  <span class="text-muted small fw-normal" id="inspectDetailLabel">— no file selected</span>
+                </span>
+                <div class="d-flex gap-2">
+                  <input type="text" class="form-control form-control-sm" style="max-width:200px"
+                    placeholder="Filter fields…" id="inspectFilter"
+                    oninput="App.filterInspectDetail(this.value)">
+                  <button class="btn btn-sm btn-outline-success" id="btnInspectExport" onclick="App.exportInspectJson()" disabled>
+                    <i class="bi bi-download me-1"></i>Download JSON
+                  </button>
+                </div>
+              </div>
+              <div class="card-body" id="inspectDetailBody">
+                <div class="text-center text-muted py-5">
+                  <i class="bi bi-file-earmark-image fs-1 d-block mb-2"></i>
+                  Select a file on the left to see its metadata.
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ══════════════════════════════════════════════════
            PAGE: SETTINGS  (teacher only)
       ══════════════════════════════════════════════════════ -->
       <div id="page-settings" class="page teacher-only">
@@ -1135,6 +1206,11 @@
   <script src="js/perceptualHash.js"></script>
   <script src="js/imageProcessor.js"></script>
   <script src="js/manifestProcessor.js"></script>
+  <!-- exifr — generic EXIF/IPTC/XMP/ICC/GPS metadata parser, used only by
+       the teacher-only "Inspect Image" tool (js/metadataInspector.js). Runs
+       entirely client-side; no file bytes are sent anywhere. -->
+  <script src="https://cdn.jsdelivr.net/npm/exifr/dist/full.umd.min.js"></script>
+  <script src="js/metadataInspector.js"></script>
   <!-- App module — same as before except for its server-call layer
        (call()) and its identity bootstrap (init()); see js/app.js header. -->
   <script src="js/app.js"></script>
