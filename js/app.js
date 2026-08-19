@@ -226,8 +226,8 @@ const App = (() => {
    * no Edge Function trusts this file's role check for anything.
    */
   function applyRoleUI() {
-    document.querySelectorAll('.teacher-only').forEach(el => { el.style.display = isTeacher ? '' : 'none'; });
-    document.querySelectorAll('.student-only').forEach(el => { el.style.display = isTeacher ? 'none' : ''; });
+    document.querySelectorAll('.teacher-only').forEach(el => { el.classList.toggle('role-hidden', !isTeacher); });
+    document.querySelectorAll('.student-only').forEach(el => { el.classList.toggle('role-hidden', isTeacher); });
 
     const emailBadge = document.getElementById('userEmailBadge');
     const emailText  = document.getElementById('userEmailText');

@@ -483,4 +483,8 @@ code { background: #f1f5f9; padding: 2px 6px; border-radius: 5px; font-size: .85
    these classes once get-current-user-context resolves. This is UX
    only, never a security boundary: the real enforcement lives in every
    Edge Function independently re-checking the caller's role. */
-.teacher-only, .student-only { display: none; }
+/* .teacher-only / .student-only carry no display rule of their own —
+   visibility is purely their element's normal display behavior (block,
+   flex, etc. from other classes) until app.js's applyRoleUI() adds
+   .role-hidden to the ones that don't match the resolved role. */
+.role-hidden { display: none !important; }
