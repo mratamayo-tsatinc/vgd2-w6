@@ -1,17 +1,1142 @@
-<!doctype html>
+<!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Sectioned Image Metadata Grader</title>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title id="pageTitleTag">Sectioned Image Metadata Grader</title>
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css" rel="stylesheet">
+  <link rel="stylesheet" href="css/styles.css">
 </head>
 <body>
-  <!--
-    Placeholder for Phase 0 only. The real app markup gets ported in
-    Phase 3 (§8 of the project brief) — this file just confirms GitHub
-    Pages is wired up and serving from the right branch/folder.
-  -->
-  <h1>Sectioned Image Metadata Grader</h1>
-  <p>Phase 0 placeholder — GitHub Pages is live. App UI comes in Phase 3.</p>
+
+  <!-- ══════════════════════════════════════════════════════
+       LOADING — shown by default while js/app.js checks for a Supabase
+       session and, once signed in, calls the get-current-user-context
+       Edge Function. Static bundles have no server-side gate (see
+       PROJECT_BRIEF §3/§5), so every visitor's browser receives this
+       whole file; what they're ALLOWED to see is decided here, in JS,
+       purely for UX — the real enforcement is that every Edge Function
+       independently re-checks the caller's role on every call.
+  ══════════════════════════════════════════════════════════ -->
+  <div id="loadingScreen" style="min-height:100vh;display:flex;align-items:center;justify-content:center;background:var(--page-bg, #f1f5f9);padding:24px">
+    <div class="d-flex align-items-center gap-3 text-muted">
+      <div class="spinner-border text-primary"></div>
+      <span>Loading…</span>
+    </div>
+  </div>
+
+  <!-- ══════════════════════════════════════════════════════
+       SIGN IN — shown when there is no active Supabase Auth session.
+  ══════════════════════════════════════════════════════════ -->
+  <div id="signInScreen" style="display:none;min-height:100vh;align-items:center;justify-content:center;background:var(--page-bg, #f1f5f9);padding:24px">
+    <div class="card shadow-sm rounded-4 border-0" style="max-width:420px;width:100%">
+      <div class="card-body text-center p-5">
+        <i class="bi bi-images text-primary" style="font-size:2.6rem"></i>
+        <h4 class="fw-bold mt-3 mb-2" id="signInAppTitle">Sectioned Image Metadata Grader</h4>
+        <p class="text-muted small mb-4">Sign in with your Google account to continue.</p>
+        <button type="button" class="btn btn-primary w-100" id="btnSignIn">
+          <i class="bi bi-google me-2"></i>Sign in with Google
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ══════════════════════════════════════════════════════
+       ACCESS DENIED — a signed-in visitor whose email is on neither the
+       `teachers` nor `students` table. This screen is UX only (see
+       PROJECT_BRIEF §3) — the real protection is that every OTHER Edge
+       Function independently re-verifies roster/teacher membership, so a
+       visitor who ignores this screen and calls another endpoint directly
+       still gets refused server-side, not just hidden here.
+  ══════════════════════════════════════════════════════════ -->
+  <div id="accessDeniedScreen" style="display:none;min-height:100vh;align-items:center;justify-content:center;background:var(--page-bg, #f1f5f9);padding:24px">
+    <div class="card shadow-sm rounded-4 border-0" style="max-width:460px;width:100%">
+      <div class="card-body text-center p-5">
+        <i class="bi bi-shield-lock-fill text-danger" style="font-size:3rem"></i>
+        <h4 class="fw-bold mt-3 mb-2">Account Not Registered</h4>
+        <p class="text-muted mb-1 small">Signed in as:</p>
+        <p class="fw-semibold mb-3" id="accessDeniedEmail">(no email detected)</p>
+        <p class="text-muted small mb-0">
+          This email address was not found in the <strong>Students</strong> list for this quiz.
+          Please ask your teacher to add your student number, name, and this email to the
+          roster before you can upload submissions or check your results.
+        </p>
+        <button type="button" class="btn btn-outline-secondary btn-sm mt-4" id="btnSignOutDenied">
+          <i class="bi bi-box-arrow-right me-1"></i>Sign out
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ══════════════════════════════════════════════════════
+       APP ROOT — the authenticated SPA. Hidden by default; shown once
+       get-current-user-context resolves with allowed:true. Everything
+       inside (which sidebar links, which pages) that used to be decided
+       server-side via `<? if (isTeacher) { ?>` is now decided client-side
+       by toggling the `.teacher-only` class below (UX only — see §3).
+  ══════════════════════════════════════════════════════════ -->
+  <div id="appRoot" style="display:none">
+
+  <!-- ── Toast Notifications ─────────────────────────────── -->
+  <div id="toastContainer" class="toast-container position-fixed top-0 end-0 p-3" style="z-index:9999"></div>
+
+  <!-- ── Sidebar ─────────────────────────────────────────── -->
+  <aside class="sidebar" id="sidebar">
+    <div class="sidebar-brand">
+      <i class="bi bi-images"></i>
+      <span id="sidebarAppTitle">Sectioned Image Metadata Grader</span>
+    </div>
+    <nav class="sidebar-nav">
+      <a href="#" class="sidebar-link teacher-only" data-page="dashboard">
+        <i class="bi bi-speedometer2"></i><span>Dashboard</span>
+      </a>
+      <a href="#" class="sidebar-link teacher-only" data-page="answerkey">
+        <i class="bi bi-key-fill"></i><span>Answer Key</span>
+      </a>
+      <a href="#" class="sidebar-link" data-page="upload">
+        <i class="bi bi-cloud-upload-fill"></i><span>Upload Submission</span>
+      </a>
+      <a href="#" class="sidebar-link teacher-only" data-page="results">
+        <i class="bi bi-table"></i><span>Results</span>
+      </a>
+      <a href="#" class="sidebar-link teacher-only mt-auto" data-page="settings">
+        <i class="bi bi-gear-fill"></i><span>Settings</span>
+      </a>
+    </nav>
+    <div class="sidebar-footer">
+      <i class="bi bi-mortarboard-fill me-1"></i>Sectioned Image Metadata Grader
+    </div>
+  </aside>
+
+  <!-- ── Main Content ────────────────────────────────────── -->
+  <div class="main-content" id="mainContent">
+
+    <!-- Top Bar -->
+    <header class="topbar">
+      <button class="btn sidebar-toggle" id="sidebarToggle" title="Toggle Sidebar">
+        <i class="bi bi-list fs-5"></i>
+      </button>
+      <h5 class="topbar-title mb-0" id="pageTitle"></h5>
+      <div class="ms-auto d-flex align-items-center gap-2">
+        <span class="badge bg-light text-secondary border px-3 py-2 d-none d-sm-inline-flex" id="userEmailBadge" style="display:none">
+          <i class="bi bi-person-circle me-1"></i><span id="userEmailText"></span>
+        </span>
+        <span class="badge px-3 py-2" id="topbarBadge">
+          <i class="bi bi-circle-fill me-1" style="font-size:.5rem;vertical-align:middle"></i><span id="topbarBadgeText"></span>
+        </span>
+        <button type="button" class="btn btn-sm btn-outline-secondary" id="btnSignOut" title="Sign out">
+          <i class="bi bi-box-arrow-right"></i>
+        </button>
+      </div>
+    </header>
+
+    <!-- ── Page Content ──────────────────────────────────── -->
+    <main class="page-content">
+
+      <!-- ══════════════════════════════════════════════════
+           PAGE: DASHBOARD  (teacher only)
+      ══════════════════════════════════════════════════════ -->
+      <div id="page-dashboard" class="page teacher-only">
+
+        <!-- Stat Cards — Phase 7: section-based terminology (was "Raw Files
+             (Groups)" / "Expected Slots" from the pre-rewrite single answer
+             key). Sourced from getDashboardStats()'s section-aware fields. -->
+        <div class="row g-4 mb-4">
+          <div class="col-6 col-lg-3">
+            <div class="stat-card">
+              <div class="stat-icon" style="background:rgba(37,99,235,.1)">
+                <i class="bi bi-collection-fill" style="color:#2563eb"></i>
+              </div>
+              <div>
+                <div class="stat-value" id="stat-sections">—</div>
+                <div class="stat-label">Sections</div>
+              </div>
+            </div>
+          </div>
+          <div class="col-6 col-lg-3">
+            <div class="stat-card">
+              <div class="stat-icon" style="background:rgba(5,150,105,.1)">
+                <i class="bi bi-images" style="color:#059669"></i>
+              </div>
+              <div>
+                <div class="stat-value" id="stat-items">—</div>
+                <div class="stat-label">Answer Key Items</div>
+              </div>
+            </div>
+          </div>
+          <div class="col-6 col-lg-3">
+            <div class="stat-card">
+              <div class="stat-icon" style="background:rgba(217,119,6,.1)">
+                <i class="bi bi-people-fill" style="color:#d97706"></i>
+              </div>
+              <div>
+                <div class="stat-value" id="stat-students">—</div>
+                <div class="stat-label">Students Active</div>
+              </div>
+            </div>
+          </div>
+          <div class="col-6 col-lg-3">
+            <div class="stat-card">
+              <div class="stat-icon" style="background:rgba(124,58,237,.1)">
+                <i class="bi bi-graph-up-arrow" style="color:#7c3aed"></i>
+              </div>
+              <div>
+                <div class="stat-value" id="stat-avg">—</div>
+                <div class="stat-label">Avg Activity Completion</div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div id="ambiguousWarning" class="alert alert-warning d-none mb-4">
+          <i class="bi bi-exclamation-triangle-fill me-2"></i>
+          <span id="ambiguousWarningText"></span>
+        </div>
+
+        <div class="row g-4">
+          <!-- Recent Files Table -->
+          <div class="col-lg-8">
+            <div class="card h-100">
+              <div class="card-header d-flex align-items-center justify-content-between">
+                <span><i class="bi bi-clock-history me-2"></i>Recently Submitted Files</span>
+                <button class="btn btn-sm btn-outline-secondary" onclick="App.loadDashboard()">
+                  <i class="bi bi-arrow-clockwise"></i>
+                </button>
+              </div>
+              <div class="card-body p-0">
+                <div class="table-responsive">
+                  <table class="table table-hover mb-0">
+                    <thead><tr>
+                      <th>Student #</th><th>Name</th><th>Section</th><th>Base File</th><th>Detected</th><th>Result</th><th>Submitted</th>
+                    </tr></thead>
+                    <tbody id="recentTable">
+                      <tr><td colspan="7" class="text-center text-muted py-4">
+                        <div class="spinner-border spinner-border-sm"></div>
+                      </td></tr>
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Score Summary — Phase 7: renamed from "Completion Summary" and
+               now reflects whole-activity percentages (buildActivityProgress_),
+               the same numbers a student sees on their own progress view. -->
+          <div class="col-lg-4">
+            <div class="card h-100">
+              <div class="card-header">
+                <i class="bi bi-bar-chart-line-fill me-2"></i>Activity Summary
+              </div>
+              <div class="card-body">
+                <div class="score-stat-item">
+                  <div class="score-stat-label"><i class="bi bi-arrow-up-circle-fill text-success me-2"></i>Highest</div>
+                  <div class="score-stat-value text-success fw-bold" id="stat-high">—</div>
+                </div>
+                <div class="score-stat-item">
+                  <div class="score-stat-label"><i class="bi bi-arrow-down-circle-fill text-danger me-2"></i>Lowest</div>
+                  <div class="score-stat-value text-danger fw-bold" id="stat-low">—</div>
+                </div>
+                <div class="score-stat-item">
+                  <div class="score-stat-label"><i class="bi bi-dash-circle-fill text-primary me-2"></i>Average</div>
+                  <div class="score-stat-value text-primary fw-bold" id="stat-avg2">—</div>
+                </div>
+                <hr class="my-3">
+                <div class="d-grid gap-2 mt-2">
+                  <button class="btn btn-primary btn-sm" onclick="App.showPage('upload')">
+                    <i class="bi bi-upload me-1"></i> Upload New Submission
+                  </button>
+                  <button class="btn btn-outline-secondary btn-sm" onclick="App.showPage('results')">
+                    <i class="bi bi-table me-1"></i> View All Results
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Section Breakdown — NEW Phase 7. Per-section item counts, max
+             points, active-student counts, and average completion, straight
+             from getDashboardStats().sectionBreakdown (Principle 1 — never
+             hardcoded, always read live). -->
+        <div class="card mt-4">
+          <div class="card-header">
+            <i class="bi bi-collection-fill me-2"></i>Section Breakdown
+          </div>
+          <div class="card-body p-0">
+            <div class="table-responsive">
+              <table class="table table-hover mb-0">
+                <thead><tr>
+                  <th>Section</th><th>Items</th><th>Max Points</th><th>Students Active</th><th>Avg Completion</th>
+                </tr></thead>
+                <tbody id="sectionBreakdownTable">
+                  <tr><td colspan="5" class="text-center text-muted py-4">
+                    <div class="spinner-border spinner-border-sm"></div>
+                  </td></tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ══════════════════════════════════════════════════
+           PAGE: ANSWER KEY  (teacher only)
+      ══════════════════════════════════════════════════════ -->
+      <div id="page-answerkey" class="page teacher-only">
+
+        <!-- ── Section Management + Attribute/Points UI. Each section's
+             answer key is built via the "Upload Model Answers" card below
+             (no Drive folder involved — Drive-folder scanning was retired
+             in pHash-feature Phase 4). The "Score These Attributes"
+             checkboxes and "Points" field configure how that section is
+             graded (read live at grading time — nothing here is
+             hardcoded). Leaving Points blank uses derived scoring:
+             max = items × attributes checked. -->
+        <div class="card mb-4">
+          <div class="card-header d-flex align-items-center justify-content-between">
+            <span><i class="bi bi-collection-fill me-2 text-primary"></i>Sections</span>
+            <button class="btn btn-sm btn-outline-primary" onclick="App.addSectionRow()">
+              <i class="bi bi-plus-lg me-1"></i>Add Section
+            </button>
+          </div>
+          <div class="card-body p-0">
+            <p class="text-muted small px-3 pt-3 mb-2">
+              <i class="bi bi-info-circle me-1"></i>Each section has its own answer key and grading
+              rules. Tick which attributes count toward a student's score for that section —
+              <strong>Name</strong> is an exact filename match, <strong>Ext</strong> is the
+              detected-byte extension, <strong>W/H</strong> are width/height, <strong>AR</strong> is
+              aspect ratio, <strong>Orient</strong> is orientation. Leave <strong>Points</strong> blank
+              for auto-derived scoring (items × attributes checked), or set a number to scale that
+              section to a fixed point total. Pick the radio button on a row to select that section —
+              its answer key (built via "Upload Model Answers" below) and the table beneath both
+              follow whichever section is selected. Remember to <strong>Save Sections</strong> after
+              any change.
+              <br class="d-none d-md-inline">
+              <strong>Software Check</strong> is a separate, unscored gate — turn it on and name a
+              program (e.g. "Adobe Photoshop") to require that a file's own metadata mentions it; a
+              file that fails this check is rejected outright, but the check itself never adds or
+              removes points. Not available on MANIFEST sections (no real file to inspect).
+            </p>
+            <div class="table-responsive">
+              <table class="table table-hover mb-0" id="sectionsTable">
+                <thead>
+                  <tr>
+                    <th style="width:40px"></th>
+                    <th>Name</th>
+                    <th style="width:120px">Type</th>
+                    <th>Score These Attributes</th>
+                    <th style="width:190px">Software Check <span class="text-muted small fw-normal">(gate, unscored)</span></th>
+                    <th style="width:100px">Points</th>
+                    <th style="width:140px">Max</th>
+                    <th style="width:90px">Items</th>
+                    <th style="width:110px"></th>
+                  </tr>
+                </thead>
+                <tbody id="sectionsBody">
+                  <tr><td colspan="9" class="text-center text-muted py-4">
+                    <div class="spinner-border spinner-border-sm"></div>
+                  </td></tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+          <div class="card-footer d-flex align-items-center gap-2">
+            <button class="btn btn-primary btn-sm" onclick="App.saveSections()">
+              <i class="bi bi-save-fill me-1"></i>Save Sections
+            </button>
+            <span class="text-muted small">
+              A newly-added row must be saved before it can be scanned or selected.
+            </span>
+          </div>
+        </div>
+
+        <!-- Upload Model Answers (pHash-feature Phase 3) — replaces Drive-
+             folder scanning as the way a section's AnswerKey is built.
+             Files are parsed through the exact same client-side
+             ImageProcessor pipeline the student Upload page uses
+             (magic-byte format detection, dimension extraction, and
+             computeAHash()), then saveAnswerKeyFromUpload() full-replaces
+             the currently-selected section's AnswerKey rows. Scoped to
+             whichever section is picked via the radio button above. -->
+        <div class="card mb-4">
+          <div class="card-header d-flex align-items-center justify-content-between">
+            <span><i class="bi bi-cloud-upload-fill me-2 text-primary"></i>Upload Model Answers
+              <span class="text-muted small fw-normal" id="akUploadSectionLabel">— no section selected</span>
+            </span>
+            <span class="badge bg-secondary" id="akUploadCount">0 files</span>
+          </div>
+          <div class="card-body">
+            <p class="text-muted small mb-3">
+              <i class="bi bi-info-circle me-1"></i>Select a section above with the radio button,
+              then drop or pick that section's model-answer image/PDF files here — they're parsed
+              right in your browser with the exact same pipeline students' submissions go through
+              (byte-detected format, dimensions, and perceptual hash), so a recorded answer and a
+              graded submission are always apples-to-apples. Uploading here
+              <strong>fully replaces</strong> this section's current answer key.
+            </p>
+
+            <div class="drop-zone py-4" id="akDropZone" onclick="document.getElementById('akFileInput').click()">
+              <i class="bi bi-images drop-zone-icon" style="font-size:2.2rem;margin-bottom:8px"></i>
+              <p class="fw-semibold mb-1">Drag &amp; drop model-answer image/PDF files here</p>
+              <p class="text-muted small mb-0">or click to browse — select every file for this section at once</p>
+            </div>
+            <input type="file" id="akFileInput" accept="image/*,.tif,.tiff,.pdf" class="d-none" multiple
+              onchange="App.handleAkFileSelect(this.files)">
+
+            <div class="mt-2 mb-2">
+              <button id="btnAkManifestExample" class="btn btn-sm btn-outline-secondary d-none" onclick="App.showManifestExample(true)">
+                <i class="bi bi-file-earmark-text me-1"></i>Manifest Example
+              </button>
+            </div>
+
+            <div id="akUploadPreview" class="d-none mt-3">
+              <div class="table-responsive border rounded-3" style="max-height:260px;overflow-y:auto">
+                <table class="table table-sm table-bordered mb-0">
+                  <thead class="table-dark sticky-top">
+                    <tr><th>File</th><th>Detected Type</th><th>Dimensions</th><th>pHash</th></tr>
+                  </thead>
+                  <tbody id="akUploadPreviewBody"></tbody>
+                </table>
+              </div>
+            </div>
+
+            <div class="mt-3">
+              <button class="btn btn-success w-100" id="btnAkUpload" onclick="App.submitAnswerKeyUpload()" disabled>
+                <i class="bi bi-save-fill me-2"></i>Replace Section's Answer Key
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <div id="akAmbiguousWarning" class="alert alert-warning d-none mb-4">
+          <i class="bi bi-exclamation-triangle-fill me-2"></i>
+          <span id="akAmbiguousWarningText"></span>
+        </div>
+
+        <!-- Answer Key Table — always shows the currently-SELECTED section -->
+        <div class="card">
+          <div class="card-header d-flex align-items-center justify-content-between gap-3">
+            <span>
+              <i class="bi bi-list-ul me-2"></i>Answer Key
+              <span class="text-muted small fw-normal" id="akSectionLabel">— no section selected</span>
+              <span class="badge bg-primary rounded-pill ms-1" id="akCount">0</span>
+            </span>
+            <div class="d-flex gap-2">
+              <input type="text" class="form-control form-control-sm" style="max-width:220px"
+                placeholder="&#xe800; Filter filename…" id="akSearch"
+                oninput="App.filterAnswerKey(this.value)">
+              <button class="btn btn-sm btn-outline-success" id="btnDownloadKey" onclick="App.downloadAnswerKey()">
+                <i class="bi bi-download me-1"></i> Download TXT
+              </button>
+            </div>
+          </div>
+          <div class="card-body p-0">
+            <p class="text-muted small px-3 pt-3 mb-0">
+              <i class="bi bi-info-circle me-1"></i>Which fields count toward a student's score for
+              this section is configured per-section (coming in Phase 3) — every file scanned into a
+              section's answer key is shown here regardless.
+            </p>
+            <div class="table-responsive">
+              <table class="table table-hover mb-0" id="akTable">
+                <thead>
+                  <tr>
+                    <th>#</th>
+                    <th>Base Name</th>
+                    <th>Filename</th>
+                    <th>Ext</th>
+                    <th>Width × Height</th>
+                    <th>Size (KB)</th>
+                    <th>Aspect Ratio</th>
+                    <th>Orientation</th>
+                    <th>pHash</th>
+                  </tr>
+                </thead>
+                <tbody id="akBody">
+                  <tr><td colspan="9" class="text-center text-muted py-5">
+                    <i class="bi bi-inbox fs-2 d-block mb-2"></i>
+                    Select a section above to view its answer key.
+                  </td></tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ══════════════════════════════════════════════════
+           PAGE: UPLOAD SUBMISSION  (everyone)
+      ══════════════════════════════════════════════════════ -->
+      <div id="page-upload" class="page">
+        <div class="row g-4">
+
+          <!-- Student identity strip + progress (mockup) -->
+          <div class="col-12 student-only">
+            <div class="mb-4 p-3 bg-white border rounded-4 d-flex align-items-center gap-3 identity-strip" style="box-shadow:var(--card-shadow)">
+              <div class="rounded-circle bg-primary-soft d-flex align-items-center justify-content-center flex-shrink-0" style="width:44px;height:44px">
+                <span class="fw-bold text-primary" id="studentInitials">ST</span>
+              </div>
+              <div>
+                <div class="fw-semibold small"><span id="studentNameText"></span> <span class="text-muted">(<span id="studentNumberText"></span>)</span></div>
+                <div class="text-muted small">Auto-detected from your signed-in account — no need to enter your student number.</div>
+              </div>
+              <span class="ms-auto badge score-good px-3 py-2" id="studentCompletionBadge">—</span>
+            </div>
+          </div>
+
+          <!-- Student stat cards (mockup placeholders populated by JS) -->
+          <div class="col-12 student-only">
+            <div class="row g-4 mb-4" id="studentStatRow">
+              <div class="col-6 col-lg-3">
+                <div class="stat-card">
+                  <div class="stat-icon" style="background:rgba(5,150,105,.1)"><i class="bi bi-check-circle-fill" style="color:#059669"></i></div>
+                  <div><div class="stat-value" id="stat-correct">—</div><div class="stat-label">Correct</div></div>
+                </div>
+              </div>
+              <div class="col-6 col-lg-3">
+                <div class="stat-card">
+                  <div class="stat-icon" style="background:rgba(220,38,38,.1)"><i class="bi bi-x-circle-fill" style="color:#dc2626"></i></div>
+                  <div><div class="stat-value" id="stat-rejected">—</div><div class="stat-label">Rejected</div></div>
+                </div>
+              </div>
+              <div class="col-6 col-lg-3">
+                <div class="stat-card">
+                  <div class="stat-icon" style="background:rgba(217,119,6,.1)"><i class="bi bi-hourglass-split" style="color:#d97706"></i></div>
+                  <div><div class="stat-value" id="stat-not-submitted">—</div><div class="stat-label">Not Submitted</div></div>
+                </div>
+              </div>
+              <div class="col-6 col-lg-3">
+                <div class="stat-card">
+                  <div class="stat-icon" style="background:rgba(37,99,235,.1)"><i class="bi bi-diagram-3-fill" style="color:#2563eb"></i></div>
+                  <div><div class="stat-value" id="stat-total-slots">—</div><div class="stat-label">Total Slots</div></div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Left: Upload Area -->
+          <div class="col-lg-7">
+            <div class="card">
+              <div class="card-header">
+                <i class="bi bi-cloud-upload-fill me-2 text-primary"></i>Upload Converted Files
+              </div>
+              <div class="card-body">
+
+                <!-- Section Selector — NEW (Phase 6). Every upload/check-result
+                     action on this page is scoped to ONE section at a time;
+                     switching sections never reloads the page (see
+                     App.selectUploadSection). Sourced from the public,
+                     unauthenticated-safe getSectionsPublic() — no folder IDs
+                     or answer-key contents are ever sent to a non-teacher
+                     session. -->
+                <div class="mb-4">
+                  <label class="form-label fw-semibold small">
+                    <i class="bi bi-collection-fill me-1 text-primary"></i>Section
+                  </label>
+                  <div id="uploadSectionSelector" class="d-flex flex-wrap gap-2">
+                    <div class="text-muted small"><div class="spinner-border spinner-border-sm"></div> Loading sections…</div>
+                  </div>
+                  <div class="form-text">Pick which section you're submitting files for — each section is graded independently, and you can switch sections any time without losing your place.</div>
+                </div>
+
+                <div class="mb-3 teacher-only">
+                  <label class="form-label fw-semibold small">
+                    <i class="bi bi-person-badge me-1 text-primary"></i>Student Number
+                  </label>
+                  <input type="text" class="form-control" id="studentNumberInputTeacher"
+                    placeholder="Enter a student number (for testing)">
+                  <div class="form-text">Entered once per session — reused for every file you upload below.</div>
+                </div>
+                <div class="mb-3 p-3 bg-light border rounded-3 d-flex align-items-center gap-3 student-only">
+                  <i class="bi bi-person-check-fill fs-4 text-success flex-shrink-0"></i>
+                  <div>
+                    <div class="fw-semibold small"><span id="studentNameText2"></span>
+                      <span class="text-muted">(#<span id="studentNumberText2"></span>)</span>
+                    </div>
+                    <div class="text-muted small">Auto-detected from your signed-in account — no need to enter your student number.</div>
+                  </div>
+                  <input type="hidden" id="studentNumberInput" value="">
+                </div>
+
+                <!-- Image Drop Zone (default) -->
+                <div id="uploadImageBlock">
+                  <div class="step-rail student-only">
+                    <div class="step done"><div class="step-num"><i class="bi bi-check-lg"></i></div><div class="step-text">Review requirements</div></div>
+                    <div class="step-line done"></div>
+                    <div class="step current"><div class="step-num">2</div><div class="step-text">Select files</div></div>
+                    <div class="step-line"></div>
+                    <div class="step"><div class="step-num">3</div><div class="step-text">Submit</div></div>
+                  </div>
+                <div class="drop-zone" id="dropZone" onclick="document.getElementById('fileInput').click()">
+                  <i class="bi bi-images drop-zone-icon"></i>
+                  <p class="fw-semibold mb-1">Drag & drop your converted image/PDF files here</p>
+                  <p class="text-muted small mb-3">or click to browse — single or bulk selection both work</p>
+                  <span class="badge bg-light text-secondary border me-1">.jpg / .jpeg</span>
+                  <span class="badge bg-light text-secondary border me-1">.png</span>
+                  <span class="badge bg-light text-secondary border me-1">.bmp</span>
+                  <span class="badge bg-light text-secondary border me-1">.gif</span>
+                  <span class="badge bg-light text-secondary border me-1">.tif / .tiff</span>
+                  <span class="badge bg-light text-secondary border">.pdf</span>
+                </div>
+                <input type="file" id="fileInput" accept="image/*,.tif,.tiff,.pdf" class="d-none" multiple
+                  onchange="App.handleFileSelect(this.files)">
+                </div>
+
+                <!-- Manifest Drop Zone (shown when section type is MANIFEST) -->
+                <div id="uploadManifestBlock" class="d-none">
+                  <div class="drop-zone" id="manifestDropZone" onclick="document.getElementById('manifestFileInput').click()">
+                    <i class="bi bi-file-earmark-text drop-zone-icon"></i>
+                    <p class="fw-semibold mb-1">Upload a .txt manifest listing your files</p>
+                    <p class="text-muted small mb-3">One line per file: base, extension, size(KB), width, height, aspect_ratio, orientation</p>
+                  </div>
+                  <input type="file" id="manifestFileInput" accept=".txt" class="d-none"
+                    onchange="App.handleManifestFileSelect(this.files)">
+                  <div class="mt-2">
+                    <button class="btn btn-sm btn-outline-secondary" onclick="App.showManifestExample(false)">
+                      <i class="bi bi-info-circle me-1"></i>Manifest Format Example
+                    </button>
+                  </div>
+                </div>
+
+                <!-- Client-side Preflight Preview -->
+                <div id="preflightPreview" class="d-none mt-4">
+                  <div class="d-flex align-items-center justify-content-between mb-2">
+                    <h6 class="mb-0 fw-semibold">
+                      <i class="bi bi-eye me-1"></i>Preflight Check
+                      <span class="text-muted small fw-normal">(detected from file bytes, not filenames — nothing sent yet)</span>
+                    </h6>
+                    <span class="badge bg-secondary" id="preflightCount">0 files</span>
+                  </div>
+                  <div class="table-responsive border rounded-3" style="max-height:300px;overflow-y:auto">
+                    <table class="table table-sm table-bordered mb-0">
+                      <thead class="table-dark sticky-top">
+                        <tr>
+                          <th>File</th><th>Base Name</th><th>Detected Type</th><th>Dimensions</th><th>Size</th><th>Preview Verdict</th>
+                        </tr>
+                      </thead>
+                      <tbody id="preflightBody"></tbody>
+                    </table>
+                  </div>
+                  <div class="form-text mt-1">
+                    "Preview Verdict" is a best-effort client-side guess about filename/content agreement —
+                    the real, authoritative grading against the selected section's Answer Key happens on Submit.
+                  </div>
+                </div>
+
+                <!-- Submit Button -->
+                <div class="mt-4">
+                  <button class="btn btn-success btn-lg w-100" id="btnSubmit"
+                    onclick="App.submitAnswers()" disabled>
+                    <i class="bi bi-send-fill me-2"></i>Submit Files for Grading
+                  </button>
+                </div>
+
+              </div>
+            </div>
+
+            <!-- Batch Grade: multiple students, each with their own image set (teacher only) -->
+            <div class="card mt-4 teacher-only">
+              <div class="card-header d-flex align-items-center justify-content-between">
+                <span><i class="bi bi-collection-fill me-2 text-primary"></i>Batch Grade (Multiple Students)</span>
+                <button class="btn btn-sm btn-outline-primary" onclick="App.addBatchStudentBlock()">
+                  <i class="bi bi-plus-lg me-1"></i>Add Student
+                </button>
+              </div>
+              <div class="card-body">
+                <p class="text-muted small mb-3">
+                  Add one block per student, enter their student number, then drop/select that
+                  student's image files. Each block is graded independently through the same
+                  rules as a single self-service submission.
+                </p>
+
+                <div id="batchStudentBlocks"></div>
+
+                <div class="mt-3">
+                  <button class="btn btn-success w-100" id="btnBatchSubmit" onclick="App.submitBatch()" disabled>
+                    <i class="bi bi-send-fill me-2"></i>Grade All Students
+                  </button>
+                </div>
+
+                <div id="batchProgress" class="d-none mt-3">
+                  <div class="d-flex justify-content-between small text-muted mb-1">
+                    <span id="batchProgressLabel">Grading…</span>
+                    <span id="batchProgressCount">0 / 0</span>
+                  </div>
+                  <div class="progress" style="height:8px">
+                    <div class="progress-bar bg-success" id="batchProgressBar" style="width:0%"></div>
+                  </div>
+                </div>
+
+                <div id="batchResults" class="d-none mt-4"></div>
+              </div>
+            </div>
+
+            <!-- Student self-service: look up saved progress -->
+            <div class="card mt-4 student-only">
+              <div class="card-header">
+                <i class="bi bi-search me-2 text-primary"></i>Check My Result
+              </div>
+              <div class="card-body">
+                <p class="text-muted small mb-3">
+                  Submissions are incremental — check your progress any time. Each individual
+                  file slot is locked after its first attempt, so re-uploads of an already-scored
+                  slot won't be re-graded.
+                </p>
+                <button class="btn btn-outline-primary w-100" id="btnCheckResult" onclick="App.checkMyResult()">
+                  <i class="bi bi-search me-1"></i>Check My Progress
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <!-- Right: Guide + Result -->
+          <div class="col-lg-5">
+
+            <!-- Activity Progress strip — NEW (Phase 6). Persistent, always
+                 shows EVERY section's score/max plus the whole-activity
+                 total, so a student never loses sight of the overall
+                 rollup while looking at just one section's checklist below.
+                 Populated by App.renderActivityProgressStrip() after any
+                 submit or "Check My Progress" call. -->
+            <div id="activityProgressCard" class="card mb-4 d-none">
+              <div class="card-header d-flex align-items-center justify-content-between">
+                <span><i class="bi bi-bar-chart-line-fill me-2 text-primary"></i>Activity Progress</span>
+                <span class="badge bg-primary rounded-pill" id="activityTotalBadge">—</span>
+              </div>
+              <div class="card-body" id="activityProgressBody">
+                <div class="text-muted small fst-italic">No submissions yet.</div>
+              </div>
+            </div>
+
+            <div class="card mb-4">
+              <div class="card-header">
+                <i class="bi bi-clipboard-check-fill me-2 text-primary"></i>What This Section Checks
+                <span class="text-muted small fw-normal" id="sectionChecksLabel"></span>
+              </div>
+              <div class="card-body">
+                <p class="text-muted small mb-2">
+                  Keep the file's original base name and extension, resize/save it as needed, and
+                  it will be checked against the teacher's answer key for this section on whichever
+                  fields are listed below — grading always checks the real file bytes, never just
+                  the filename.
+                </p>
+                <div id="sectionChecksList">
+                  <div class="text-center text-muted py-3">
+                    <div class="spinner-border spinner-border-sm"></div>
+                  </div>
+                </div>
+                <ul class="list-unstyled small text-muted mt-3 mb-0 guide-list">
+                  <li><i class="bi bi-check-circle-fill text-success"></i> Upload any number of files, any time — single or bulk</li>
+                  <li><i class="bi bi-check-circle-fill text-success"></i> Only genuine, re-saved files pass — renamed-but-unedited files are detected and rejected</li>
+                  <li><i class="bi bi-exclamation-triangle-fill text-warning"></i> Each file only gets ONE scored attempt per section</li>
+                </ul>
+              </div>
+            </div>
+
+            <!-- Submission Result Card (shown after submit / check) -->
+            <div id="resultCard" class="d-none">
+              <div class="card">
+                <div class="card-header fw-semibold" id="resultCardHeader">
+                  <i class="bi bi-clipboard-check me-2"></i>Result
+                </div>
+                <div class="card-body" id="resultBody"></div>
+              </div>
+            </div>
+          </div>
+
+        </div>
+
+        <!-- Per-Section Results — full-width cards below the two-column
+             layout, mirroring student-portal-mockup-v2.html's stacked
+             "Section 1 / Section 2" cards. Every enabled section in the
+             student's activity rollup renders here at once (not just
+             whichever section is picked in the selector above), so
+             reviewing results never requires flipping the section picker
+             back and forth. Populated by App.renderStudentSectionCards(). -->
+        <div id="studentSectionResults" class="mt-2 student-only"></div>
+      </div>
+
+      <!-- ══════════════════════════════════════════════════
+           PAGE: RESULTS  (teacher only)
+      ══════════════════════════════════════════════════════ -->
+      <div id="page-results" class="page teacher-only">
+
+        <!-- Toolbar -->
+        <div class="card mb-4">
+          <div class="card-body py-3">
+            <div class="d-flex flex-wrap gap-2 align-items-center">
+              <div class="input-group" style="max-width:280px">
+                <span class="input-group-text bg-white">
+                  <i class="bi bi-search text-muted"></i>
+                </span>
+                <input type="text" class="form-control border-start-0 ps-0"
+                  placeholder="Search student…" id="resultsSearch"
+                  oninput="App.filterResults(this.value)">
+              </div>
+              <div class="ms-auto d-flex gap-2">
+                <button class="btn btn-outline-secondary" onclick="App.loadResults()">
+                  <i class="bi bi-arrow-clockwise me-1"></i>Refresh
+                </button>
+                <button class="btn btn-outline-primary" onclick="App.exportResults()">
+                  <i class="bi bi-download me-1"></i>Export CSV
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Results Table -->
+        <div class="card">
+          <div class="card-header">
+            <i class="bi bi-table me-2"></i>All Students
+            <span class="badge bg-primary rounded-pill ms-1" id="resultsCount">0</span>
+          </div>
+          <div class="card-body p-0">
+            <div class="table-responsive">
+              <table class="table table-hover mb-0" id="resultsTable">
+                <thead>
+                  <tr>
+                    <th>Student #</th><th>Name</th>
+                    <th>Activity Total</th><th>Completion</th>
+                    <th>Last Submitted</th><th></th>
+                  </tr>
+                </thead>
+                <tbody id="resultsBody">
+                  <tr><td colspan="6" class="text-center py-4">
+                    <div class="spinner-border spinner-border-sm text-primary"></div>
+                  </td></tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ══════════════════════════════════════════════════
+           PAGE: SETTINGS  (teacher only)
+      ══════════════════════════════════════════════════════ -->
+      <div id="page-settings" class="page teacher-only">
+        <div class="row g-4">
+
+          <!-- General Settings -->
+          <div class="col-lg-6">
+            <div class="card">
+              <div class="card-header">
+                <i class="bi bi-sliders me-2 text-primary"></i>General Settings
+              </div>
+              <div class="card-body">
+                <div class="mb-4">
+                  <label class="form-label fw-semibold">
+                    <i class="bi bi-type me-1 text-primary"></i>App Title
+                  </label>
+                  <input type="text" class="form-control" id="settingAppTitle"
+                    placeholder="Sectioned Image Metadata Grader">
+                </div>
+
+                <div class="mb-4">
+                  <label class="form-label fw-semibold">
+                    <i class="bi bi-rulers me-1 text-info"></i>Dimension Tolerance (± px)
+                  </label>
+                  <input type="number" class="form-control" id="settingDimensionTolerance"
+                    min="0" step="1" placeholder="0">
+                  <div class="form-text">
+                    Allowed pixel difference between a submitted file's width/height and the
+                    values recorded in that section's answer key, for any section with the
+                    Width/Height checks enabled. A resize that should be exact keeps this at
+                    <strong>0</strong> (the recommended default). Applies activity-wide — not
+                    applied to PDF files, see the note below.
+                  </div>
+                </div>
+
+                <div class="alert alert-light border small mb-4">
+                  <i class="bi bi-file-earmark-pdf text-danger me-1"></i>
+                  PDF submissions are verified by file signature + base name + slot-lock only. A
+                  PDF's page size is in points, tied to export DPI, and doesn't map 1:1 to a
+                  raster image's pixel dimensions, so the width/height/aspect-ratio checks are
+                  intentionally skipped for PDF files even in sections that have them enabled.
+                </div>
+
+                <!-- ── Perceptual Hash Scoring — pHash-feature Phase 7 ──────
+                     Activity-wide tuning of the optional per-section
+                     "Perceptual Hash" attribute (toggled per-section on the
+                     Answer Key page). Lives here, alongside Dimension
+                     Tolerance, because it's the same kind of knob: a single
+                     global setting the scoring engine reads live on every
+                     submission (Code.gs' scorePHash_()) — changing it here
+                     takes effect immediately, no redeploy needed. -->
+                <hr class="my-4">
+                <h6 class="fw-semibold small text-uppercase text-muted mb-3">
+                  <i class="bi bi-percent me-1"></i>Perceptual Hash Scoring
+                </h6>
+
+                <div class="mb-4">
+                  <label class="form-label fw-semibold">
+                    <i class="bi bi-rulers me-1 text-info"></i>Distance Threshold (Hamming Distance, 0–64)
+                  </label>
+                  <input type="number" class="form-control" id="settingPHashThreshold"
+                    min="0" max="64" step="1" placeholder="8">
+                  <div class="form-text">
+                    Max Hamming Distance between a submission's perceptual hash and the answer
+                    key's hash that's still eligible for any credit on the <strong>Perceptual
+                    Hash</strong> attribute. Used directly as the zero-credit cutoff in
+                    <strong>Linear</strong> mode below; <strong>Tier</strong> mode uses its own
+                    breakpoints instead and ignores this value. Always skipped for PDF files —
+                    see the PDF note above.
+                  </div>
+                </div>
+
+                <div class="mb-4">
+                  <label class="form-label fw-semibold">
+                    <i class="bi bi-sliders2 me-1 text-info"></i>Scoring Mode
+                  </label>
+                  <select class="form-select" id="settingPHashScoringMode"
+                    onchange="App.updatePHashModeVisibility()">
+                    <option value="LINEAR">Linear — score fades smoothly to 0 at the threshold</option>
+                    <option value="TIER">Tier — fixed score per distance breakpoint</option>
+                  </select>
+                  <div class="form-text">
+                    <strong>Linear:</strong> score = 1 − (distance ÷ threshold), clamped to
+                    [0, 1]. <strong>Tier:</strong> the first breakpoint below (sorted by Max
+                    Distance) whose Max Distance is ≥ the submission's actual distance sets the
+                    score.
+                  </div>
+                </div>
+
+                <div class="mb-4 d-none" id="pHashTierEditorWrap">
+                  <label class="form-label fw-semibold d-flex align-items-center justify-content-between">
+                    <span>Tier Breakpoints</span>
+                    <button type="button" class="btn btn-sm btn-outline-primary" onclick="App.addPHashTierRow()">
+                      <i class="bi bi-plus-lg me-1"></i>Add Row
+                    </button>
+                  </label>
+                  <div class="table-responsive border rounded-3" style="max-height:220px;overflow-y:auto">
+                    <table class="table table-sm mb-0">
+                      <thead class="sticky-top table-light">
+                        <tr><th>Max Distance</th><th>Score (0–1)</th><th></th></tr>
+                      </thead>
+                      <tbody id="pHashTierBody"></tbody>
+                    </table>
+                  </div>
+                  <div class="form-text">
+                    Rows don't need to be entered in order — they're sorted by Max Distance
+                    automatically when saved. If a submission's distance exceeds every row here,
+                    it gets 0 credit for the Perceptual Hash attribute on that file.
+                  </div>
+                </div>
+
+                <button class="btn btn-primary w-100" onclick="App.saveSettings()">
+                  <i class="bi bi-save-fill me-2"></i>Save Settings
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <!-- Image Type Aliases + Teacher Accounts -->
+          <div class="col-lg-6">
+            <div class="card">
+              <div class="card-header d-flex align-items-center justify-content-between">
+                <span><i class="bi bi-arrow-left-right me-2 text-primary"></i>Image Type Aliases</span>
+                <button class="btn btn-sm btn-outline-primary" onclick="App.addAliasRow()">
+                  <i class="bi bi-plus-lg me-1"></i>Add Row
+                </button>
+              </div>
+              <div class="card-body p-0">
+                <div class="table-responsive" style="max-height:300px;overflow-y:auto">
+                  <table class="table table-sm mb-0">
+                    <thead class="sticky-top table-light">
+                      <tr>
+                        <th>Input Alias</th>
+                        <th>Canonical Name</th>
+                        <th></th>
+                      </tr>
+                    </thead>
+                    <tbody id="aliasesBody"></tbody>
+                  </table>
+                </div>
+              </div>
+              <div class="card-footer">
+                <button class="btn btn-primary btn-sm w-100" onclick="App.saveAliases()">
+                  <i class="bi bi-save-fill me-1"></i>Save Aliases
+                </button>
+              </div>
+            </div>
+
+            <div class="card mt-4">
+              <div class="card-header d-flex align-items-center justify-content-between">
+                <span><i class="bi bi-person-badge-fill me-2 text-primary"></i>Teacher Accounts</span>
+                <button class="btn btn-sm btn-outline-primary" onclick="App.addUserRow()">
+                  <i class="bi bi-plus-lg me-1"></i>Add Row
+                </button>
+              </div>
+              <div class="card-body p-0">
+                <div class="table-responsive" style="max-height:260px;overflow-y:auto">
+                  <table class="table table-sm mb-0">
+                    <thead class="sticky-top table-light">
+                      <tr>
+                        <th>Email</th>
+                        <th>Full Name</th>
+                        <th></th>
+                      </tr>
+                    </thead>
+                    <tbody id="usersBody"></tbody>
+                  </table>
+                </div>
+              </div>
+              <div class="card-footer">
+                <div class="form-text mb-2">
+                  Signed-in users whose email is listed here see the full teacher dashboard.
+                  Everyone else only sees the student Upload &amp; Check Result page. Requires
+                  the deployment's "Who has access" to be set to a Google-account option.
+                </div>
+                <button class="btn btn-primary btn-sm w-100" onclick="App.saveUsers()">
+                  <i class="bi bi-save-fill me-1"></i>Save Teacher Accounts
+                </button>
+              </div>
+            </div>
+
+            <div class="card mt-4" style="border-color:#fca5a5">
+              <div class="card-header text-danger fw-semibold" style="background:#fff5f5">
+                <i class="bi bi-exclamation-triangle-fill me-2"></i>Danger Zone
+              </div>
+              <div class="card-body">
+                <div class="d-flex flex-column gap-3">
+                  <div class="d-flex align-items-start justify-content-between gap-3">
+                    <div>
+                      <div class="fw-semibold small">Clear Answer Key</div>
+                      <div class="text-muted" style="font-size:.8rem">Removes all scanned raw-file groups.</div>
+                    </div>
+                    <button class="btn btn-sm btn-outline-danger flex-shrink-0"
+                      onclick="App.confirmClearAnswerKey()">
+                      <i class="bi bi-trash-fill me-1"></i>Clear
+                    </button>
+                  </div>
+                  <hr class="my-1">
+                  <div class="d-flex align-items-start justify-content-between gap-3">
+                    <div>
+                      <div class="fw-semibold small">Clear All Submissions</div>
+                      <div class="text-muted" style="font-size:.8rem">Permanently deletes every student's submitted-file log and locks.</div>
+                    </div>
+                    <button class="btn btn-sm btn-outline-danger flex-shrink-0"
+                      onclick="App.confirmClearSubmissions()">
+                      <i class="bi bi-trash-fill me-1"></i>Clear
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+        </div>
+      </div>
+
+    </main>
+  </div><!-- /.main-content -->
+
+  <!-- ── Confirmation Modal ───────────────────────────────── -->
+  <!-- Manifest Example Modal -->
+  <div class="modal fade" id="manifestExampleModal" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog modal-lg modal-dialog-centered">
+      <div class="modal-content">
+        <div class="modal-header">
+          <h5 class="modal-title">Manifest Example</h5>
+          <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+        </div>
+        <div class="modal-body">
+          <p class="small text-muted">Each manifest line must be: base, extension, size_kb, width, height, aspect_ratio, orientation</p>
+          <textarea id="manifestExampleText" class="form-control" rows="8" style="font-family:monospace"></textarea>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-outline-secondary" onclick="App.copyManifestExample()">Copy to clipboard</button>
+          <button type="button" class="btn btn-secondary" onclick="App.downloadManifestExample()">Download .txt</button>
+          <button type="button" class="btn btn-primary" data-bs-dismiss="modal">Close</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="modal fade" id="confirmModal" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog modal-dialog-centered">
+      <div class="modal-content rounded-4 border-0 shadow">
+        <div class="modal-header border-0 pb-0">
+          <h5 class="modal-title fw-bold" id="confirmTitle">Confirm Action</h5>
+          <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+        </div>
+        <div class="modal-body pt-2" id="confirmBody">Are you sure?</div>
+        <div class="modal-footer border-0 pt-0">
+          <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+          <button type="button" class="btn btn-danger" id="confirmActionBtn">
+            <i class="bi bi-check-lg me-1"></i>Confirm
+          </button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+        <!-- Results Detail Modal (card-based section summaries + attribute status) -->
+        <div class="modal fade" id="resultDetailModal" tabindex="-1" aria-hidden="true">
+          <div class="modal-dialog modal-lg modal-dialog-centered">
+            <div class="modal-content rounded-4 border-0 shadow">
+              <div class="modal-header border-0 pb-0">
+                <h5 class="modal-title fw-bold" id="resultDetailModalTitle">Student Details</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+              </div>
+              <div class="modal-body pt-2" id="resultDetailModalBody">
+                <!-- populated by JS -->
+              </div>
+              <div class="modal-footer border-0 pt-0">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Item Detail Modal — mirrors the mockup's #frameModal: one file,
+             one row per scored attribute, with a plain-language reason for
+             each. Populated per-click from whichever section checklist is
+             currently on screen (see App.openItemDetailModal). -->
+        <div class="modal fade" id="itemDetailModal" tabindex="-1" aria-hidden="true">
+          <div class="modal-dialog modal-dialog-centered">
+            <div class="modal-content rounded-4 border-0 shadow">
+              <div class="modal-header border-0 pb-0">
+                <div>
+                  <h5 class="modal-title fw-bold mb-0" id="itemDetailModalTitle">—</h5>
+                  <div class="text-muted small" id="itemDetailModalSub"></div>
+                </div>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+              </div>
+              <div class="modal-body pt-3" id="itemDetailModalBody">
+                <!-- populated by JS -->
+              </div>
+              <div class="modal-footer border-0 pt-0">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+              </div>
+            </div>
+          </div>
+        </div>
+
+  </div><!-- /#appRoot -->
+
+  <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
+  <!-- header-only TIFF parser, used client-side to read width/height tags from
+       TIFF files without a full image decode (browsers cannot render TIFF via
+       <img>). PDF targets are verified by file signature only — see the
+       ImageProcessor module for why. -->
+  <script src="https://cdn.jsdelivr.net/npm/utif@3.1.0/UTIF.js"></script>
+
+  <!-- Supabase JS (UMD build — exposes window.supabase.createClient, a
+       plain global usable from the classic, non-module scripts below,
+       same as every other CDN dependency here). -->
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <script src="js/supabaseClient.js"></script>
+
+  <!-- Client-side file inspection — extracted verbatim from JavaScript.html,
+       zero logic changes (see PROJECT_BRIEF §2/§8). -->
+  <script src="js/perceptualHash.js"></script>
+  <script src="js/imageProcessor.js"></script>
+  <script src="js/manifestProcessor.js"></script>
+  <!-- App module — same as before except for its server-call layer
+       (call()) and its identity bootstrap (init()); see js/app.js header. -->
+  <script src="js/app.js"></script>
 </body>
 </html>
