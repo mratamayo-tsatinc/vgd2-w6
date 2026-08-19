@@ -260,7 +260,10 @@ const App = (() => {
   /** Starts the Google OAuth sign-in redirect. Bound to #btnSignIn. */
   async function signIn() {
     if (!window.sbClient) return;
-    await window.sbClient.auth.signInWithOAuth({ provider: 'google' });
+    await window.sbClient.auth.signInWithOAuth({
+      provider: 'google',
+      options: { redirectTo: window.location.href }
+    });
   }
 
   /** Signs out and returns to the sign-in screen. Bound to #btnSignOut
