@@ -31,6 +31,8 @@ const App = (() => {
   let akPendingRecords = [];   // NEW — Phase 3 (pHash feature): ImageProcessor records staged for
                                 // the "Upload Model Answers" flow, scoped to currentSectionId
   let resultsData      = [];   // grouped per-student results (teacher)
+  let resultsView      = 'ALL'; // Results tab: 'ALL' (activity total) or a sectionId
+  let resultsQuery     = '';    // Results tab: current search text
   let pendingRecords    = [];  // ImageProcessor records staged for the self-service Submit
   let sectionsPublicData   = []; // NEW — Phase 6: public (folder-ID-free) Sections list for the Upload page
   let selectedSectionId    = ''; // NEW — Phase 6: which section the Upload page is currently scoped to
@@ -2164,7 +2166,8 @@ const App = (() => {
       if (result && result.success === false)
         throw new Error(result.error || 'Server returned an error.');
       resultsData = JSON.parse((result && result.dataJson) || '[]');
-      renderResults(resultsData);
+      populateResultsViewSelect();
+      renderResults();
     } catch (e) {
       document.getElementById('resultsBody').innerHTML = emptyRow(6, 'Failed to load results.');
       document.getElementById('resultsCount').textContent = '0';
@@ -2172,27 +2175,199 @@ const App = (() => {
     }
   }
 
-  function renderResults(data) {
-    data = Array.isArray(data) ? data : [];
-    document.getElementById('resultsCount').textContent = data.length;
-    const tbody = document.getElementById('resultsBody');
-    if (!data.length) {
-      tbody.innerHTML = emptyRow(6, 'No student activity yet.');
-      return;
-    }
+  // ── Results: per-section view helpers ──────────────────────
 
-    tbody.innerHTML = data.map((s, i) => {
-      return '<tr>' +
+  /** Builds the View dropdown from the sections present in the loaded data
+   *  (same order buildActivityProgress_() returns them — i.e. SortOrder). */
+  function populateResultsViewSelect() {
+    const sel = document.getElementById('resultsViewSelect');
+    if (!sel) return;
+    const seen = new Map();
+    resultsData.forEach(s => (s.sections || []).forEach(sec => {
+      if (!seen.has(sec.sectionId)) seen.set(sec.sectionId, sec.sectionName);
+    }));
+    sel.innerHTML = '<option value="ALL">All sections — activity total</option>' +
+      Array.from(seen, ([id, name]) =>
+        '<option value="' + esc(id) + '">' + esc(name) + '</option>').join('');
+    // A section that disappeared (deleted/disabled) falls back to the combined view.
+    if (resultsView !== 'ALL' && !seen.has(resultsView)) resultsView = 'ALL';
+    sel.value = resultsView;
+  }
+
+  function setResultsView(view) {
+    resultsView = view || 'ALL';
+    renderResults();
+  }
+
+  function findSection_(student, sectionId) {
+    return (student.sections || []).find(x => x.sectionId === sectionId) || null;
+  }
+
+  function getResultsSectionName_(sectionId) {
+    for (const s of resultsData) {
+      const sec = findSection_(s, sectionId);
+      if (sec) return sec.sectionName;
+    }
+    return 'Section';
+  }
+
+  /**
+   * True if the student actually submitted something to this section.
+   * Uses the per-item result when it is available (anything other than
+   * NOT_SUBMITTED counts — so a REJECTED upload is still "submitted"),
+   * and falls back to score > 0 if the items carry no result field.
+   */
+  function sectionSubmitted_(sec) {
+    const items = (sec && sec.items) || [];
+    if (items.some(it => it && it.result !== undefined)) {
+      return items.some(it => it && it.result && it.result !== 'NOT_SUBMITTED');
+    }
+    return (parseFloat(sec && sec.sectionScore) || 0) > 0;
+  }
+
+  function sectionItemCounts_(sec) {
+    const items = (sec && sec.items) || [];
+    return {
+      total:    items.length,
+      correct:  items.filter(it => it.result === 'CORRECT').length,
+      partial:  items.filter(it => it.result === 'PARTIAL').length,
+      rejected: items.filter(it => it.result === 'REJECTED').length
+    };
+  }
+
+  /** Students matching the search box (applies to both views). */
+  function getVisibleResults_() {
+    const q = resultsQuery.trim().toLowerCase();
+    if (!q) return resultsData;
+    return resultsData.filter(s =>
+      String(s.studentNumber).toLowerCase().includes(q) ||
+      (s.studentName || '').toLowerCase().includes(q));
+  }
+
+  /** One row per student for the selected section, best score first,
+   *  students who haven't submitted last (then by name). Used by both the
+   *  table and the section CSV so they always show the same order. */
+  function buildSectionRows_(students) {
+    return students.map(s => {
+      const sec = findSection_(s, resultsView);
+      return {
+        s: s,
+        sec: sec,
+        submitted: sec ? sectionSubmitted_(sec) : false,
+        pct: sec ? (parseFloat(sec.percentage) || 0) : 0
+      };
+    }).sort((x, y) =>
+      (Number(y.submitted) - Number(x.submitted)) ||
+      (y.pct - x.pct) ||
+      String(x.s.studentName || '').localeCompare(String(y.s.studentName || '')));
+  }
+
+  /**
+   * Renders the Results table for whichever view is selected.
+   *  • ALL     — the original activity-total table (unchanged behavior).
+   *  • section — that section's score / completion / items / status, plus a
+   *              summary strip. Search applies to both. Arguments are
+   *              ignored (older callers pass a list) — state is module-level.
+   */
+  function renderResults() {
+    const data   = getVisibleResults_();
+    const head   = document.getElementById('resultsHead');
+    const tbody  = document.getElementById('resultsBody');
+    const title  = document.getElementById('resultsCardTitle');
+    const sumEl  = document.getElementById('resultsSectionSummary');
+    const expLbl = document.getElementById('btnExportResultsLabel');
+    document.getElementById('resultsCount').textContent = data.length;
+
+    const eyeBtn = s =>
+      '<button class="btn btn-sm btn-outline-secondary" title="View breakdown" ' +
+      'data-sn="' + esc(String(s.studentNumber)) + '" ' +
+      'onclick="App.openResultsModal(this.dataset.sn)">' +
+      '<i class="bi bi-eye"></i></button>';
+
+    // ── ALL view: original behavior ──
+    if (resultsView === 'ALL') {
+      if (title)  title.textContent  = 'All Students';
+      if (expLbl) expLbl.textContent = 'Export CSV';
+      if (sumEl)  sumEl.classList.add('d-none');
+      head.innerHTML = '<tr><th>Student #</th><th>Name</th>' +
+        '<th>Activity Total</th><th>Completion</th>' +
+        '<th>Last Submitted</th><th></th></tr>';
+      if (!data.length) {
+        tbody.innerHTML = emptyRow(6, 'No student activity yet.');
+        return;
+      }
+      tbody.innerHTML = data.map(s =>
+        '<tr>' +
         '<td><code>' + esc(String(s.studentNumber)) + '</code></td>' +
         '<td>' + esc(s.studentName) + '</td>' +
         '<td><strong>' + s.activityScore + '</strong>/<span class="text-muted">' + s.activityMax + '</span></td>' +
         '<td>' + scoreBadge(s.percentage) + '</td>' +
         '<td><small class="text-muted">' + esc(s.lastSubmitted) + '</small></td>' +
-        '<td><button class="btn btn-sm btn-outline-secondary" title="View section breakdown" ' +
-        'onclick="App.openResultsModal(' + i + ')">' +
-        '<i class="bi bi-eye"></i></button></td>' +
-        '</tr>';
+        '<td>' + eyeBtn(s) + '</td>' +
+        '</tr>'
+      ).join('');
+      return;
+    }
+
+    // ── Single-section view ──
+    const secName = getResultsSectionName_(resultsView);
+    if (title)  title.textContent  = secName;
+    if (expLbl) expLbl.textContent = 'Export Section CSV';
+    head.innerHTML = '<tr><th>Student #</th><th>Name</th><th>Section Score</th>' +
+      '<th>Completion</th><th>Items Correct</th><th>Status</th><th></th></tr>';
+
+    if (!data.length) {
+      tbody.innerHTML = emptyRow(7, 'No student activity yet.');
+      if (sumEl) sumEl.classList.add('d-none');
+      return;
+    }
+
+    const rows = buildSectionRows_(data);
+    tbody.innerHTML = rows.map(r => {
+      const s = r.s, sec = r.sec;
+      const idCells = '<td><code>' + esc(String(s.studentNumber)) + '</code></td>' +
+                      '<td>' + esc(s.studentName) + '</td>';
+      if (!sec) {
+        return '<tr>' + idCells +
+          '<td colspan="4" class="text-muted small fst-italic">Section not available for this student</td>' +
+          '<td>' + eyeBtn(s) + '</td></tr>';
+      }
+      if (!r.submitted) {
+        return '<tr>' + idCells +
+          '<td class="text-muted">0/' + sec.sectionMax + '</td>' +
+          '<td><span class="text-muted">—</span></td>' +
+          '<td><span class="text-muted">—</span></td>' +
+          '<td><span class="badge bg-secondary-subtle text-secondary border">Not submitted</span></td>' +
+          '<td>' + eyeBtn(s) + '</td></tr>';
+      }
+      const c = sectionItemCounts_(sec);
+      const tip = c.correct + ' correct, ' + c.partial + ' partial, ' + c.rejected + ' rejected';
+      return '<tr>' + idCells +
+        '<td><strong>' + sec.sectionScore + '</strong>/<span class="text-muted">' + sec.sectionMax + '</span></td>' +
+        '<td>' + scoreBadge(r.pct) + '</td>' +
+        '<td title="' + esc(tip) + '">' + c.correct + ' / ' + c.total + '</td>' +
+        '<td><span class="badge bg-success-subtle text-success border border-success-subtle">Submitted</span></td>' +
+        '<td>' + eyeBtn(s) + '</td></tr>';
     }).join('');
+
+    // Summary strip — averages are shown BOTH ways, because "not submitted"
+    // students score 0 and would otherwise drag the class average down.
+    if (sumEl) {
+      const withData  = rows.filter(r => r.sec);
+      const submitted = withData.filter(r => r.submitted).map(r => r.pct);
+      const avgAll = withData.length ? withData.reduce((t, r) => t + r.pct, 0) / withData.length : 0;
+      const avgSub = submitted.length ? submitted.reduce((t, v) => t + v, 0) / submitted.length : 0;
+      sumEl.innerHTML =
+        '<i class="bi bi-bar-chart-line-fill me-1"></i>' +
+        'Submitted <strong>' + submitted.length + ' / ' + withData.length + '</strong>' +
+        ' · Average (submitters) <strong>' + avgSub.toFixed(1) + '%</strong>' +
+        ' · Average (all students) <strong>' + avgAll.toFixed(1) + '%</strong>' +
+        (submitted.length
+          ? ' · Highest <strong>' + Math.max.apply(null, submitted).toFixed(1) + '%</strong>' +
+            ' · Lowest <strong>' + Math.min.apply(null, submitted).toFixed(1) + '%</strong>'
+          : '');
+      sumEl.classList.remove('d-none');
+    }
   }
 
   /**
@@ -2240,6 +2415,124 @@ const App = (() => {
     return '<div class="card mb-3"><div class="card-body">' + header + itemsHtml + '</div></div>';
   }
 
+  // ── Results detail modal: collapsible per-section breakdown ──────────
+  // Teacher "View breakdown" only. buildResultsDetailHtml()/buildSectionCardHtml()
+  // above are intentionally left untouched — the student's own "View Details"
+  // modal (Upload tab) still uses them.
+
+  /** Item cards for one section (same markup as buildSectionCardHtml's items). */
+  function buildSectionItemsHtml_(sec) {
+    return (sec.items || []).map(it => {
+      const pts = it.rawMax ? (fmtScore_(it.rawScore) + ' / ' + it.rawMax) : '';
+      return '<div class="group-checklist-card mb-2">' +
+        '<div class="d-flex align-items-center justify-content-between gap-2 mb-2">' +
+          '<div class="d-flex align-items-center gap-2">' +
+            '<div class="frame-mini-thumb" style="background:linear-gradient(155deg,#64748b,#334155)"><i class="bi bi-file-earmark-image"></i></div>' +
+            '<div><div class="fw-semibold small">' + esc(it.baseName) + '</div>' +
+              (it.extension ? '<div class="small text-muted">' + esc(it.extension) + '</div>' : '') +
+            '</div>' +
+          '</div>' +
+          '<div class="text-end">' +
+            (pts ? '<div class="text-muted small mb-1">' + pts + '</div>' : '') +
+            resultBadge(it.result) +
+          '</div>' +
+        '</div>' +
+        '<div>' + buildAttributeBreakdownHtml(it.attributeScores) + '</div>' +
+        '</div>';
+    }).join('');
+  }
+
+  /**
+   * Accordion of sections: each header shows the section name, a compact
+   * status summary (correct / partial / rejected / not submitted counts),
+   * its score and percentage; the item cards stay collapsed until opened.
+   * Panels are independent (no data-bs-parent) so several can be open.
+   */
+  function buildResultsAccordionHtml_(s, sections, startOpen, showOverview) {
+    if (!sections || !sections.length) {
+      return '<div class="text-muted small fst-italic">No section activity yet.</div>';
+    }
+    const uid = 'rdAcc' + Date.now();
+    const chip = (n, cls, icon, label) => n
+      ? '<span class="badge bg-' + cls + '-subtle text-' + (cls === 'warning' ? 'warning-emphasis' : cls) +
+        ' border border-' + cls + '-subtle fw-semibold" title="' + n + ' ' + label + '">' +
+        '<i class="bi ' + icon + ' me-1"></i>' + n + '</span>'
+      : '';
+
+    let submittedSections = 0;
+    const panels = sections.map((sec, i) => {
+      const id = uid + '-' + i;
+      const items = sec.items || [];
+      const c = sectionItemCounts_(sec);
+      const notSub = items.filter(it => !it.result || it.result === 'NOT_SUBMITTED').length;
+      const submitted = sectionSubmitted_(sec);
+      if (submitted) submittedSections++;
+      const pct = parseFloat(sec.percentage) || 0;
+
+      const summary = submitted
+        ? chip(c.correct,  'success',   'bi-check-lg',         'correct') +
+          chip(c.partial,  'warning',   'bi-dash-circle-fill', 'partial') +
+          chip(c.rejected, 'danger',    'bi-x-lg',             'rejected') +
+          chip(notSub,     'secondary', 'bi-hourglass-split',  'not submitted')
+        : '';
+      const rightSide = submitted
+        ? '<span class="small text-muted text-nowrap"><strong class="text-dark">' + sec.sectionScore + '</strong> / ' + sec.sectionMax + '</span>' + scoreBadge(pct)
+        : '<span class="small text-muted text-nowrap">0 / ' + sec.sectionMax + '</span>' +
+          '<span class="badge bg-secondary-subtle text-secondary border">Not submitted</span>';
+
+      const bodyHtml = submitted
+        ? buildSectionItemsHtml_(sec)
+        : '<div class="text-muted small fst-italic">Nothing submitted for this section yet.</div>';
+
+      return '<div class="accordion-item">' +
+        '<h2 class="accordion-header">' +
+          '<button class="accordion-button py-2 px-3' + (startOpen ? '' : ' collapsed') + '" type="button" ' +
+            'data-bs-toggle="collapse" data-bs-target="#' + id + '" ' +
+            'aria-expanded="' + (startOpen ? 'true' : 'false') + '" aria-controls="' + id + '">' +
+            '<div class="d-flex align-items-center flex-wrap gap-2 w-100 me-2">' +
+              '<span class="fw-semibold small flex-grow-1 text-break">' + esc(sec.sectionName) + '</span>' +
+              '<span class="d-flex gap-1">' + summary + '</span>' +
+              rightSide +
+            '</div>' +
+          '</button>' +
+        '</h2>' +
+        '<div id="' + id + '" class="accordion-collapse collapse' + (startOpen ? ' show' : '') + '">' +
+          '<div class="accordion-body bg-light p-2">' + bodyHtml + '</div>' +
+        '</div>' +
+      '</div>';
+    }).join('');
+
+    let overview = '';
+    if (showOverview) {
+      const apct = parseFloat(s.percentage) || 0;
+      overview =
+        '<div class="d-flex align-items-center flex-wrap gap-2 mb-3">' +
+          '<div class="me-auto small">' +
+            '<span class="text-muted">Activity total</span> ' +
+            '<strong>' + s.activityScore + '</strong> / ' + s.activityMax + ' ' + scoreBadge(apct) +
+            '<span class="text-muted ms-2">· ' + submittedSections + ' of ' + sections.length + ' sections submitted</span>' +
+          '</div>' +
+          (sections.length > 1
+            ? '<div class="btn-group btn-group-sm">' +
+                '<button type="button" class="btn btn-outline-secondary" onclick="App.toggleAllResultSections(true)">' +
+                  '<i class="bi bi-arrows-expand me-1"></i>Expand all</button>' +
+                '<button type="button" class="btn btn-outline-secondary" onclick="App.toggleAllResultSections(false)">' +
+                  '<i class="bi bi-arrows-collapse me-1"></i>Collapse all</button>' +
+              '</div>'
+            : '') +
+        '</div>';
+    }
+    return overview + '<div class="accordion">' + panels + '</div>';
+  }
+
+  /** Expand / collapse every section panel in the Results detail modal. */
+  function toggleAllResultSections(expand) {
+    document.querySelectorAll('#resultDetailModalBody .accordion-collapse').forEach(el => {
+      const inst = bootstrap.Collapse.getOrCreateInstance(el, { toggle: false });
+      if (expand) inst.show(); else inst.hide();
+    });
+  }
+
   function toggleDetail(id, btn) {
     const row = document.getElementById(id);
     row.classList.toggle('d-none');
@@ -2247,17 +2540,26 @@ const App = (() => {
     icon.className = row.classList.contains('d-none') ? 'bi bi-chevron-down' : 'bi bi-chevron-up';
   }
 
-  // Opens the Results Detail modal for a teacher (student index in resultsData)
-  function openResultsModal(idx) {
+  // Opens the Results Detail modal for a teacher. Looked up by student number
+  // (not row index) so it stays correct while a search filter / section sort
+  // is active. In a single-section view it shows just that section.
+  function openResultsModal(studentNumber) {
     const md = document.getElementById('resultDetailModal');
     const title = document.getElementById('resultDetailModalTitle');
     const body  = document.getElementById('resultDetailModalBody');
     if (!md || !body) return;
-    const s = resultsData && resultsData[idx];
+    const s = resultsData.find(x => String(x.studentNumber) === String(studentNumber));
     if (!s) { body.innerHTML = '<div class="text-muted small">No data.</div>'; }
     else {
       title.textContent = s.studentName + ' — ' + s.studentNumber;
-      body.innerHTML = buildResultsDetailHtml(s);
+      if (resultsView === 'ALL') {
+        // Overview of every section, all collapsed — open only what you need.
+        body.innerHTML = buildResultsAccordionHtml_(s, s.sections || [], false, true);
+      } else {
+        const sec = findSection_(s, resultsView);
+        body.innerHTML = sec ? buildResultsAccordionHtml_(s, [sec], true, false)
+          : '<div class="text-muted small fst-italic">No activity in this section yet.</div>';
+      }
     }
     new bootstrap.Modal(md).show();
   }
@@ -2282,27 +2584,58 @@ const App = (() => {
   }
 
   function filterResults(q) {
-    const lq = q.toLowerCase();
-    const filtered = q
-      ? resultsData.filter(s =>
-          String(s.studentNumber).includes(q) ||
-          (s.studentName || '').toLowerCase().includes(lq))
-      : resultsData;
-    renderResults(filtered);
+    resultsQuery = q || '';
+    renderResults();
+  }
+
+  /** Shared CSV download. A UTF-8 BOM is prepended so Excel shows
+   *  non-ASCII student names (ñ, etc.) correctly. */
+  function downloadCsv_(rows, filename) {
+    const csv = rows
+      .map(r => r.map(v => '"' + String(v == null ? '' : v).replace(/"/g, '""') + '"').join(','))
+      .join('\r\n');
+    const a = document.createElement('a');
+    a.href = 'data:text/csv;charset=utf-8,' + encodeURIComponent('\uFEFF' + csv);
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
   }
 
   /**
-   * MODIFIED — Phase 7. CSV export now includes a Score/Max column pair per
-   * section, not just the final activity total (acceptance criteria: "CSV
-   * export includes per-section breakdown, not just the final total.").
-   * Section columns follow the same order for every student —
-   * buildActivityProgress_() always iterates enabled sections sorted by
-   * SortOrder, so every student's `sections` array is in identical order —
-   * so the first student's list is a safe, correct canonical column order.
+   * CSV export — follows the View dropdown.
+   *  • ALL     — the original wide file: Score/Max column pair per section
+   *              plus the activity total (unchanged columns).
+   *  • section — one flat row per student for just that section, with a
+   *              Status column (Submitted / Not submitted) for Excel filtering.
+   * Both export EVERY student (the search box only filters the on-screen
+   * table), same as the original behavior.
    */
   function exportResults() {
     if (!resultsData.length) { toast('No data to export.', 'warning'); return; }
+    const today = new Date().toISOString().split('T')[0];
 
+    // ── Single-section export ──
+    if (resultsView !== 'ALL') {
+      const secName = getResultsSectionName_(resultsView);
+      const header = ['Student Number', 'Student Name', 'Section', 'Status', 'Score', 'Max',
+                      'Percentage (%)', 'Items Correct', 'Items Partial', 'Items Rejected', 'Items Total'];
+      const rows = buildSectionRows_(resultsData).map(r => {
+        const s = r.s, sec = r.sec;
+        if (!sec) return [s.studentNumber, s.studentName, secName, 'N/A', '', '', '', '', '', '', ''];
+        const c = sectionItemCounts_(sec);
+        return [s.studentNumber, s.studentName, secName,
+                r.submitted ? 'Submitted' : 'Not submitted',
+                sec.sectionScore, sec.sectionMax, sec.percentage,
+                c.correct, c.partial, c.rejected, c.total];
+      });
+      downloadCsv_([header].concat(rows),
+        'results-' + secName.replace(/[^\w\-]+/g, '_') + '-' + today + '.csv');
+      toast('CSV downloaded for "' + secName + '".', 'success');
+      return;
+    }
+
+    // ── All sections (original behavior) ──
     const sectionNames = (resultsData[0].sections || []).map(sec => sec.sectionName);
 
     const header = ['Student Number', 'Student Name']
@@ -2321,16 +2654,7 @@ const App = (() => {
         .concat([s.activityScore, s.activityMax, s.percentage, s.lastSubmitted]);
     });
 
-    const csv = [header, ...rows]
-      .map(r => r.map(v => '"' + String(v).replace(/"/g,'""') + '"').join(','))
-      .join('\r\n');
-    const uri = 'data:text/csv;charset=utf-8,' + encodeURIComponent(csv);
-    const a   = document.createElement('a');
-    a.href    = uri;
-    a.download = 'quiz-results-' + new Date().toISOString().split('T')[0] + '.csv';
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
+    downloadCsv_([header].concat(rows), 'quiz-results-' + today + '.csv');
     toast('CSV downloaded.', 'success');
   }
 
@@ -3076,8 +3400,10 @@ const App = (() => {
     openResultsModal,
     // Results
     loadResults,
+    setResultsView,
     filterResults,
     exportResults,
+    toggleAllResultSections,
     confirmClearSubmissions,
     toggleDetail,
     // Inspect Image
